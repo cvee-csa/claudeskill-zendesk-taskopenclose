@@ -97,13 +97,26 @@ These values never change — Department is always IT, Ticket Allocation is alwa
 
 ## Handling auth failures
 
-If `mcp__zendesk__*` returns `Zendesk client is not authenticated` or a similar auth error:
+There are two distinct failure signatures — tell them apart before picking a fix, since they need different responses:
 
-**Option A — Quick retry**: Sometimes auth errors are transient. Retry the exact same call once. If it fails a second time in the same session, don't keep retrying — the auth is very likely down for the whole session, not transient. Go straight to Option C (or B if the user is present and can reconnect quickly) rather than burning more calls on retries.
+- **`Zendesk client is not authenticated` / "Configure either legacy API token auth or complete the OAuth flow first."** — no credentials are configured at all. Use Options A–C below.
+- **`{"error": "invalid_token", "error_description": "The access token provided is expired, revoked, malformed or invalid for other reasons."}`** — credentials exist but the OAuth access token has expired. Use Option D (OAuth refresh) — this is usually faster than the browser fallback and doesn't require the Claude Chrome extension to be connected.
+
+**Option A — Quick retry**: Sometimes auth errors are transient. Retry the exact same call once. If it fails a second time in the same session with the *same* error, don't keep retrying — go straight to Option D (if it's `invalid_token`) or Option C (if it's the "not authenticated" error and the browser extension is available), rather than burning more calls on retries.
 
 **Option B — Reconnect via settings**: Ask the user to go to Cowork Settings → Connections → Zendesk and re-enter their API token. Once they confirm ("done"), retry.
 
-**Option C — Browser fallback** (if MCP keeps failing): Use Claude in Chrome to create the ticket via the Zendesk web UI.
+**Option D — OAuth token refresh** (for `invalid_token` errors): This connector supports a self-service OAuth re-auth flow via two tools — `mcp__zendesk__begin_oauth_authorization` and `mcp__zendesk__complete_oauth_authorization` (may be prefixed, e.g. `mcp__remote-devices__zendesk__*` — search for them if the plain names aren't found).
+
+1. Call `begin_oauth_authorization` (no args needed unless a non-default scope is required). It returns an `authorization_url` and a `state` value.
+2. Give the user the `authorization_url` and ask them to open it in their own browser and approve access.
+3. Zendesk will redirect to `https://localhost/callback?code=...&state=...`. This page will fail to load (nothing runs on localhost) — that's expected. Tell the user to copy the `code` and `state` query parameters out of the browser's address bar on that failed page, and send them back.
+4. Call `complete_oauth_authorization(code=<code>, state=<state>)`. A successful response confirms the tokens were saved and reports an `expires_in` (observed to be as short as 1800 seconds / 30 minutes).
+5. Retry the original ticket operation.
+
+Because the token can expire in as little as 30 minutes, don't assume a working OAuth connection from earlier in the session is still valid — if a call fails with `invalid_token` after some time has passed, just redo this flow rather than treating it as a one-time setup step.
+
+**Option C — Browser fallback** (if MCP keeps failing and it's the "not authenticated" error, not `invalid_token`): Use Claude in Chrome to create the ticket via the Zendesk web UI. Note: this requires the Claude browser extension to be connected — if `tabs_context_mcp` / `navigate` report the extension isn't connected, this option isn't available either; fall back to Option B or D instead.
 
 1. Navigate to `https://cloudsecurityalliance.zendesk.com/agent`
 2. Click **+ Add → Ticket**
